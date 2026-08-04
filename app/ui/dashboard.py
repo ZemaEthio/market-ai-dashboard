@@ -26,44 +26,191 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    .block-container {padding-top: 1.35rem; padding-bottom: 3rem; max-width: 1500px;}
-    [data-testid="stSidebar"] {border-right: 1px solid rgba(128,128,128,.18);}
+    :root {
+        --zema-blue: #2563eb;
+        --zema-purple: #7c3aed;
+        --zema-cyan: #06b6d4;
+        --zema-green: #16a34a;
+        --zema-red: #dc2626;
+        --zema-amber: #d97706;
+    }
+
+    .block-container {
+        padding-top: 1.1rem;
+        padding-bottom: 3rem;
+        max-width: 1520px;
+    }
+
+    [data-testid="stAppViewContainer"] {
+        background:
+            radial-gradient(circle at 8% 0%, rgba(37,99,235,.12), transparent 26rem),
+            radial-gradient(circle at 92% 8%, rgba(124,58,237,.10), transparent 28rem);
+    }
+
+    [data-testid="stSidebar"] {
+        border-right: 1px solid rgba(99,102,241,.22);
+        background: linear-gradient(180deg, rgba(37,99,235,.07), rgba(124,58,237,.04));
+    }
+
     .hero {
-        padding: 1.2rem 1.35rem;
-        border: 1px solid rgba(128,128,128,.22);
-        border-radius: 18px;
-        background: linear-gradient(135deg, rgba(25,118,210,.11), rgba(124,77,255,.08));
+        position: relative;
+        overflow: hidden;
+        padding: 1.45rem 1.55rem;
+        border: 1px solid rgba(99,102,241,.26);
+        border-radius: 22px;
+        background:
+            linear-gradient(120deg, rgba(37,99,235,.22), rgba(124,58,237,.18), rgba(6,182,212,.12));
+        box-shadow: 0 16px 42px rgba(15,23,42,.12);
         margin-bottom: 1rem;
     }
-    .hero h1 {margin: 0; font-size: 2rem;}
-    .hero p {margin: .35rem 0 0 0; opacity: .78;}
+
+    .hero::after {
+        content: "";
+        position: absolute;
+        width: 240px;
+        height: 240px;
+        right: -80px;
+        top: -115px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(255,255,255,.24), transparent 68%);
+    }
+
+    .hero h1 {
+        margin: 0;
+        font-size: 2.15rem;
+        font-weight: 850;
+        letter-spacing: -.025em;
+    }
+
+    .hero p {
+        margin: .42rem 0 0 0;
+        opacity: .82;
+        max-width: 900px;
+    }
+
+    .hero-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: .45rem;
+        margin-top: .85rem;
+    }
+
+    .hero-badge {
+        padding: .28rem .62rem;
+        border-radius: 999px;
+        font-size: .76rem;
+        font-weight: 700;
+        border: 1px solid rgba(255,255,255,.24);
+        background: rgba(255,255,255,.10);
+    }
+
     .status-card {
-        border: 1px solid rgba(128,128,128,.22);
-        border-radius: 16px;
-        padding: 1rem 1.05rem;
-        min-height: 118px;
-        background: rgba(255,255,255,.025);
-    }
-    .status-label {
-        font-size: .78rem;
-        text-transform: uppercase;
-        letter-spacing: .08em;
-        opacity: .65;
-        margin-bottom: .35rem;
-    }
-    .status-value {font-size: 1.42rem; font-weight: 750; line-height: 1.15;}
-    .status-sub {font-size: .83rem; opacity: .7; margin-top: .38rem;}
-    .positive {border-left: 5px solid #21c55d;}
-    .negative {border-left: 5px solid #ef4444;}
-    .neutral {border-left: 5px solid #f59e0b;}
-    .info-card {border-left: 5px solid #3b82f6;}
-    .section-title {font-size: 1.12rem; font-weight: 700; margin: .5rem 0 .65rem;}
-    .small-note {font-size: .82rem; opacity: .7;}
-    div[data-testid="stMetric"] {
         border: 1px solid rgba(128,128,128,.18);
+        border-radius: 18px;
+        padding: 1.05rem 1.08rem;
+        min-height: 132px;
+        background: linear-gradient(145deg, rgba(255,255,255,.075), rgba(255,255,255,.025));
+        box-shadow: 0 10px 24px rgba(15,23,42,.08);
+        transition: transform .18s ease, box-shadow .18s ease;
+    }
+
+    .status-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 14px 30px rgba(15,23,42,.12);
+    }
+
+    .status-label {
+        font-size: .75rem;
+        text-transform: uppercase;
+        letter-spacing: .10em;
+        opacity: .66;
+        margin-bottom: .42rem;
+        font-weight: 750;
+    }
+
+    .status-value {
+        font-size: 1.48rem;
+        font-weight: 850;
+        line-height: 1.12;
+    }
+
+    .status-sub {
+        font-size: .82rem;
+        opacity: .72;
+        margin-top: .48rem;
+        line-height: 1.35;
+    }
+
+    .positive {
+        border-left: 6px solid var(--zema-green);
+        background: linear-gradient(145deg, rgba(22,163,74,.15), rgba(22,163,74,.035));
+    }
+
+    .negative {
+        border-left: 6px solid var(--zema-red);
+        background: linear-gradient(145deg, rgba(220,38,38,.14), rgba(220,38,38,.03));
+    }
+
+    .neutral {
+        border-left: 6px solid var(--zema-amber);
+        background: linear-gradient(145deg, rgba(217,119,6,.15), rgba(217,119,6,.035));
+    }
+
+    .info-card {
+        border-left: 6px solid var(--zema-blue);
+        background: linear-gradient(145deg, rgba(37,99,235,.15), rgba(37,99,235,.035));
+    }
+
+    .explain-box {
+        padding: .9rem 1rem;
+        border-radius: 15px;
+        border: 1px solid rgba(6,182,212,.25);
+        background: linear-gradient(120deg, rgba(6,182,212,.10), rgba(37,99,235,.07));
+        margin: .5rem 0 1rem;
+    }
+
+    .explain-title {
+        font-weight: 800;
+        margin-bottom: .28rem;
+    }
+
+    .small-note {
+        font-size: .82rem;
+        opacity: .72;
+        line-height: 1.4;
+    }
+
+    div[data-testid="stMetric"] {
+        border: 1px solid rgba(99,102,241,.18);
+        border-radius: 15px;
+        padding: .72rem .84rem;
+        background: linear-gradient(145deg, rgba(255,255,255,.065), rgba(255,255,255,.015));
+        box-shadow: 0 7px 18px rgba(15,23,42,.055);
+    }
+
+    div[data-testid="stMetricLabel"] {
+        color: rgba(99,102,241,.92);
+        font-weight: 720;
+    }
+
+    button[data-baseweb="tab"] {
+        font-weight: 700;
+    }
+
+    [data-testid="stDataFrame"] {
         border-radius: 14px;
-        padding: .65rem .8rem;
-        background: rgba(255,255,255,.02);
+        overflow: hidden;
+        border: 1px solid rgba(99,102,241,.15);
+    }
+
+    .stProgress > div > div > div > div {
+        background-image: linear-gradient(90deg, #2563eb, #7c3aed, #06b6d4);
+    }
+
+    @media (max-width: 800px) {
+        .hero h1 {font-size: 1.65rem;}
+        .status-card {min-height: 112px;}
+        .status-value {font-size: 1.2rem;}
     }
     </style>
     """,
@@ -143,8 +290,15 @@ def render_scenario(title: str, scenario: Any, icon: str) -> None:
 st.markdown(
     """
     <div class="hero">
-      <h1>ZEMA Market AI Control Center</h1>
-      <p>Gold and forex decision support powered by technical, news, decision, and deterministic risk engines.</p>
+      <h1>📈 ZEMA Market AI Control Center</h1>
+      <p>Technical structure, macro news, scenario intelligence, and deterministic risk controls in one research dashboard.</p>
+      <div class="hero-badges">
+        <span class="hero-badge">🟡 Gold</span>
+        <span class="hero-badge">💱 EUR/USD</span>
+        <span class="hero-badge">🧠 3 Analysis Engines</span>
+        <span class="hero-badge">🛡️ Rule-Based Risk Gate</span>
+        <span class="hero-badge">🔄 Auto Refresh Every 4 Hours</span>
+      </div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -263,6 +417,38 @@ row[3].markdown(
     unsafe_allow_html=True,
 )
 
+st.markdown(
+    """
+    <div class="explain-box">
+      <div class="explain-title">How to read this dashboard</div>
+      <div class="small-note">
+        A trade candidate appears only when Engine 3 identifies a directional setup
+        <strong>and</strong> the deterministic Risk Engine approves it. Confidence measures
+        agreement and evidence quality—not the probability of profit. A WAIT result is a
+        valid safety decision, not a system failure.
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+confidence_left, confidence_right = st.columns(2)
+with confidence_left:
+    st.caption("Combined decision confidence")
+    decision_confidence = float(decision.get("confidence", 0.0)) if decision else 0.0
+    st.progress(max(0.0, min(1.0, decision_confidence)))
+    st.caption(
+        "Higher values indicate stronger agreement between technical and macro evidence."
+    )
+
+with confidence_right:
+    st.caption("Technical confidence")
+    technical_confidence = float(market.get("confidence", 0.0)) if market else 0.0
+    st.progress(max(0.0, min(1.0, technical_confidence)))
+    st.caption(
+        "Based on trend structure, momentum, volatility, levels, and data quality."
+    )
+
 st.markdown("### Market overview")
 metrics = st.columns(6)
 metrics[0].metric("Last price", fmt_number(market.get("last_price") if market else None))
@@ -271,6 +457,15 @@ metrics[2].metric("Market confidence", fmt_percent(market.get("confidence") if m
 metrics[3].metric("News bias", safe_upper(news.get("bias") if news else None))
 metrics[4].metric("RSI 14", fmt_number(market.get("rsi14") if market else None, 2))
 metrics[5].metric("Market regime", safe_upper(market.get("market_regime") if market else None))
+
+trend_text = safe_upper(market.get("trend") if market else None)
+news_text = safe_upper(news.get("bias") if news else None)
+alignment_text = safe_upper(decision.get("alignment") if decision else None)
+
+st.caption(
+    f"Quick read: technical trend is **{trend_text}**, news bias is **{news_text}**, "
+    f"and engine alignment is **{alignment_text}**."
+)
 
 if candles_df.empty:
     st.warning("No candles found for the selected instrument and interval.")
@@ -352,6 +547,17 @@ with technical_tab:
             f"**Invalidation:** {fmt_number(market.get('invalidation_level'))} · "
             f"**Quality:** {safe_upper(market.get('data_quality'))}"
         )
+        with st.expander("Indicator guide"):
+            st.markdown(
+                """
+                - **EMA 20 / 50 / 200:** short-, medium-, and long-term trend structure.
+                - **RSI 14:** momentum; extreme readings can warn of stretched conditions.
+                - **ATR 14:** recent volatility, useful for judging stop distance.
+                - **Support / resistance:** nearby zones where price may react.
+                - **Invalidation:** the level or condition that weakens the current thesis.
+                """
+            )
+
         st.markdown("#### Engine reasoning")
         for reason in market.get("reasons") or []:
             st.markdown(f"- {reason}")
@@ -449,6 +655,11 @@ with risk_tab:
         trade[0].metric("Entry", fmt_number(risk.get("entry_price")))
         trade[1].metric("Stop", fmt_number(risk.get("stop_price")))
         trade[2].metric("Target", fmt_number(risk.get("target_price")))
+
+        st.info(
+            "Risk approval means the setup passed the configured sizing, staleness, "
+            "confidence, reward-to-risk, and event-risk rules. It does not guarantee a profitable outcome."
+        )
 
         rejection_reasons = risk.get("rejection_reasons") or []
         if rejection_reasons:
