@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 from app.services.read_model import (
@@ -470,11 +471,152 @@ st.caption(
 if candles_df.empty:
     st.warning("No candles found for the selected instrument and interval.")
 else:
-    chart_df = candles_df[["close"]].copy()
-    chart_df["EMA 20"] = chart_df["close"].ewm(span=20, adjust=False).mean()
-    chart_df["EMA 50"] = chart_df["close"].ewm(span=50, adjust=False).mean()
-    chart_df.columns = ["Close", "EMA 20", "EMA 50"]
-    st.line_chart(chart_df, height=390)
+    chart_data = candles_df.copy()
+    chart_data["EMA 20"] = chart_data["close"].ewm(span=20, adjust=False).mean()
+    chart_data["EMA 50"] = chart_data["close"].ewm(span=50, adjust=False).mean()
+    chart_data["EMA 200"] = chart_data["close"].ewm(span=200, adjust=False).mean()
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Candlestick(
+            x=chart_data.index,
+            open=chart_data["open"],
+            high=chart_data["high"],
+            low=chart_data["low"],
+            close=chart_data["close"],
+            name="Price",
+            increasing_line_color="#16a34a",
+            decreasing_line_color="#dc2626",
+            increasing_fillcolor="#16a34a",
+            decreasing_fillcolor="#dc2626",
+        )
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=chart_data.index,
+            y=chart_data["EMA 20"],
+            mode="lines",
+            name="EMA 20",
+            line={"color": "#06b6d4", "width": 1.8},
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=chart_data.index,
+            y=chart_data["EMA 50"],
+            mode="lines",
+            name="EMA 50",
+            line={"color": "#7c3aed", "width": 1.8},
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=chart_data.index,
+            y=chart_data["EMA 200"],
+            mode="lines",
+            name="EMA 200",
+            line={"color": "#f59e0b", "width": 2.0},
+        )
+    )
+
+    support_levels = (market or {}).get("support_levels") or []
+    resistance_levels = (market or {}).get("resistance_levels") or []
+
+    for index, level in enumerate(support_levels[:4], start=1):
+        try:
+            fig.add_hline(
+                y=float(level),
+                line_dash="dot",
+                line_color="#22c55e",
+                opacity=0.62,
+                annotation_text=f"S{index} {float(level):.5f}",
+                annotation_position="bottom left",
+            )
+        except (TypeError, ValueError):
+            pass
+
+    for index, level in enumerate(resistance_levels[:4], start=1):
+        try:
+            fig.add_hline(
+                y=float(level),
+                line_dash="dot",
+                line_color="#ef4444",
+                opacity=0.62,
+                annotation_text=f"R{index} {float(level):.5f}",
+                annotation_position="top left",
+            )
+        except (TypeError, ValueError):
+            pass
+
+    trade_levels = (
+        ("Entry", (risk or {}).get("entry_price"), "#2563eb", "solid"),
+        ("Stop", (risk or {}).get("stop_price"), "#dc2626", "dash"),
+        ("Target", (risk or {}).get("target_price"), "#16a34a", "dash"),
+    )
+    for label, value, color, dash in trade_levels:
+        try:
+            if value is not None:
+                numeric_value = float(value)
+                fig.add_hline(
+                    y=numeric_value,
+                    line_dash=dash,
+                    line_color=color,
+                    line_width=2,
+                    annotation_text=f"{label} {numeric_value:.5f}",
+                    annotation_position="top right",
+                )
+        except (TypeError, ValueError):
+            pass
+
+    fig.update_layout(
+        title={
+            "text": f"{symbol} · {interval} market structure",
+            "x": 0.01,
+            "xanchor": "left",
+        },
+        height=575,
+        margin={"l": 10, "r": 10, "t": 58, "b": 10},
+        xaxis_title=None,
+        yaxis_title="Price",
+        hovermode="x unified",
+        legend={
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": 1.02,
+            "xanchor": "right",
+            "x": 1,
+        },
+        xaxis={
+            "rangeslider": {"visible": False},
+            "rangeselector": {
+                "buttons": [
+                    {"count": 24, "label": "1D", "step": "hour", "stepmode": "backward"},
+                    {"count": 7, "label": "1W", "step": "day", "stepmode": "backward"},
+                    {"count": 1, "label": "1M", "step": "month", "stepmode": "backward"},
+                    {"step": "all", "label": "All"},
+                ]
+            },
+        },
+        template="plotly_dark",
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config={
+            "displaylogo": False,
+            "scrollZoom": True,
+            "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+        },
+    )
+
+    chart_help = st.columns(4)
+    chart_help[0].caption("🟢 Green candles: price closed above its open")
+    chart_help[1].caption("🔴 Red candles: price closed below its open")
+    chart_help[2].caption("Dotted lines: support and resistance")
+    chart_help[3].caption("Solid/dashed trade lines: entry, stop, and target")
 
 summary_tab, technical_tab, news_tab, scenarios_tab, risk_tab, audit_tab = st.tabs(
     ["Decision", "Technicals", "News & Macro", "Scenarios", "Risk", "Audit"]
