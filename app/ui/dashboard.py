@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -531,6 +532,18 @@ except Exception as exc:
     st.stop()
 
 with st.sidebar:
+    st.markdown("## 📈 ZEMA Market AI")
+    st.caption("Research-grade market intelligence")
+    st.markdown(
+        """
+        <div class="small-note">
+        Four-layer pipeline: market structure, macro news, decision intelligence,
+        and deterministic risk control.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.divider()
     st.header("Market controls")
     available = list_symbols(DATABASE_PATH)
     symbol_options = sorted({row["symbol"] for row in available}) or ["GC=F", "EURUSD=X"]
@@ -548,6 +561,9 @@ with st.sidebar:
             "<meta http-equiv='refresh' content='60'>",
             unsafe_allow_html=True,
         )
+
+    if st.button("↻ Refresh now", use_container_width=True):
+        st.rerun()
 
     st.divider()
     st.caption("System")
@@ -589,6 +605,24 @@ elif candle_age_hours > 3:
     st.warning(f"Market data is {candle_age_label} old. Confirm freshness before acting.")
 else:
     st.success(f"Data freshness looks healthy. Latest candle age: {candle_age_label}.")
+
+with st.sidebar:
+    st.caption("Live snapshot")
+    if candle_age_hours is None:
+        st.error("Data age unknown")
+    elif candle_age_hours <= 3:
+        st.success(f"Market data fresh · {candle_age_label}")
+    elif candle_age_hours <= 8:
+        st.warning(f"Market data aging · {candle_age_label}")
+    else:
+        st.error(f"Market data stale · {candle_age_label}")
+
+    latest_action = safe_upper(decision.get("preferred_action") if decision else None)
+    st.metric("Current decision", latest_action)
+    st.metric(
+        "Risk gate",
+        "APPROVED" if risk and risk.get("approved") else ("REJECTED" if risk else "NOT RUN"),
+    )
 
 action = decision.get("preferred_action") if decision else None
 approved = bool(risk and risk.get("approved"))
@@ -1599,7 +1633,53 @@ with audit_tab:
         st.json(bundle)
 
 st.divider()
+st.markdown("### Export current snapshot")
 st.caption(
-    "Decision support only. Free market and news feeds may be delayed or incomplete. "
-    "No automatic trade execution is included."
+    "Download the currently selected instrument's latest engine outputs for review, "
+    "documentation, or paper-trading records."
+)
+
+export_left, export_right = st.columns(2)
+
+snapshot_json = json.dumps(bundle, indent=2, default=str)
+export_left.download_button(
+    label="Download snapshot as JSON",
+    data=snapshot_json,
+    file_name=f"{symbol.replace('=', '').replace('^', '')}_{interval}_market_ai_snapshot.json",
+    mime="application/json",
+    use_container_width=True,
+)
+
+summary_rows = [
+    {
+        "symbol": symbol,
+        "interval": interval,
+        "last_price": market.get("last_price") if market else None,
+        "technical_bias": market.get("bias") if market else None,
+        "technical_confidence": market.get("confidence") if market else None,
+        "news_bias": news.get("bias") if news else None,
+        "news_confidence": news.get("confidence") if news else None,
+        "decision_action": decision.get("preferred_action") if decision else None,
+        "decision_bias": decision.get("combined_bias") if decision else None,
+        "decision_confidence": decision.get("confidence") if decision else None,
+        "risk_approved": risk.get("approved") if risk else None,
+        "entry_price": risk.get("entry_price") if risk else None,
+        "stop_price": risk.get("stop_price") if risk else None,
+        "target_price": risk.get("target_price") if risk else None,
+        "maximum_loss_amount": risk.get("maximum_loss_amount") if risk else None,
+        "latest_candle_age": candle_age_label,
+    }
+]
+snapshot_csv = pd.DataFrame(summary_rows).to_csv(index=False)
+export_right.download_button(
+    label="Download executive summary as CSV",
+    data=snapshot_csv,
+    file_name=f"{symbol.replace('=', '').replace('^', '')}_{interval}_executive_summary.csv",
+    mime="text/csv",
+    use_container_width=True,
+)
+
+st.caption(
+    "Built by ZEMA · Automated refresh every four hours · "
+    "Research and paper-trading decision support only."
 )
