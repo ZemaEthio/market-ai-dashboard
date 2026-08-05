@@ -13,9 +13,9 @@ from app.engines.news_engine import analyze_news
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Engine 2 news and macro analysis.")
     parser.add_argument("--symbols", nargs="+", default=["GC=F", "EURUSD=X"])
-    parser.add_argument("--lookback-hours", type=int, default=48)
+    parser.add_argument("--lookback-hours", type=int, default=72)
     parser.add_argument("--max-per-feed", type=int, default=30)
-    parser.add_argument("--gdelt-max-records", type=int, default=75)
+    parser.add_argument("--gdelt-max-records", type=int, default=100)
     parser.add_argument("--database", default="data/market_ai.db")
     parser.add_argument("--no-gdelt", action="store_true")
     parser.add_argument("--no-save", action="store_true")

@@ -3,30 +3,51 @@ from __future__ import annotations
 import hashlib
 import re
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import quote_plus, urlsplit, urlunsplit
 
 import requests
 
-USER_AGENT = "MarketAI-Research/1.0 (+local decision-support project)"
+USER_AGENT = "MarketAI-Research/2.0 (+instrument-aware market-news analysis)"
 
+# Official sources are intentionally preferred because they are primary sources.
 RSS_FEEDS = [
-    {"source":"Federal Reserve","url":"https://www.federalreserve.gov/feeds/press_all.xml","source_type":"official_central_bank","reliability":1.0},
-    {"source":"Federal Reserve Speeches","url":"https://www.federalreserve.gov/feeds/speeches.xml","source_type":"official_central_bank","reliability":1.0},
-    {"source":"European Central Bank","url":"https://www.ecb.europa.eu/rss/press.html","source_type":"official_central_bank","reliability":1.0},
-    {"source":"ECB Speeches","url":"https://www.ecb.europa.eu/rss/speeches.html","source_type":"official_central_bank","reliability":1.0},
-    {"source":"Bank of England","url":"https://www.bankofengland.co.uk/rss/news","source_type":"official_central_bank","reliability":1.0},
-    {"source":"Bank for International Settlements","url":"https://www.bis.org/doclist/all_pressrels.rss","source_type":"official_global_finance","reliability":0.95},
-    {"source":"BIS Statistics","url":"https://data.bis.org/feed.xml","source_type":"official_economic_data","reliability":0.95},
-    {"source":"U.S. Treasury Press","url":"https://home.treasury.gov/news/press-releases/feed","source_type":"official_government","reliability":0.95},
-    {"source":"BLS CPI","url":"https://www.bls.gov/feed/cpi.rss","source_type":"official_economic_data","reliability":1.0},
-    {"source":"BLS Employment Situation","url":"https://www.bls.gov/feed/empsit.rss","source_type":"official_economic_data","reliability":1.0},
-    {"source":"BLS Producer Prices","url":"https://www.bls.gov/feed/ppi.rss","source_type":"official_economic_data","reliability":1.0},
-    {"source":"Eurostat","url":"https://ec.europa.eu/eurostat/api/dissemination/rss/news-releases/en","source_type":"official_economic_data","reliability":0.95},
+    {"source": "Federal Reserve", "url": "https://www.federalreserve.gov/feeds/press_all.xml", "source_type": "official_central_bank", "reliability": 1.00},
+    {"source": "Federal Reserve Speeches", "url": "https://www.federalreserve.gov/feeds/speeches.xml", "source_type": "official_central_bank", "reliability": 1.00},
+    {"source": "European Central Bank", "url": "https://www.ecb.europa.eu/rss/press.html", "source_type": "official_central_bank", "reliability": 1.00},
+    {"source": "ECB Speeches", "url": "https://www.ecb.europa.eu/rss/speeches.html", "source_type": "official_central_bank", "reliability": 1.00},
+    {"source": "Bank of England", "url": "https://www.bankofengland.co.uk/rss/news", "source_type": "official_central_bank", "reliability": 1.00},
+    {"source": "BIS", "url": "https://www.bis.org/doclist/all_pressrels.rss", "source_type": "official_multilateral", "reliability": 0.98},
+    {"source": "US Treasury", "url": "https://home.treasury.gov/rss/press-releases.xml", "source_type": "official_government", "reliability": 0.98},
+    {"source": "BLS CPI", "url": "https://www.bls.gov/feed/cpi.rss", "source_type": "official_statistics", "reliability": 1.00},
+    {"source": "BLS Employment", "url": "https://www.bls.gov/feed/empsit.rss", "source_type": "official_statistics", "reliability": 1.00},
 ]
 
+# Search concepts by instrument. These are also used to build the GDELT query.
+INSTRUMENT_SEARCH_TERMS = {
+    "GC=F": [
+        "gold", "bullion", "Federal Reserve", "inflation", "real yields", "Treasury yields",
+        "US dollar", "geopolitical risk", "central bank gold", "gold mine", "banking stress",
+        "recession", "sanctions", "tariffs", "oil prices",
+    ],
+    "XAUUSD": [
+        "gold", "bullion", "Federal Reserve", "inflation", "real yields", "Treasury yields",
+        "US dollar", "geopolitical risk", "central bank gold", "gold mine", "banking stress",
+        "recession", "sanctions", "tariffs", "oil prices",
+    ],
+    "EURUSD=X": [
+        "euro", "ECB", "Eurozone inflation", "Eurozone GDP", "European energy", "Federal Reserve",
+        "US inflation", "US payrolls", "Treasury yields", "US dollar", "European politics",
+        "trade tariffs", "banking stress",
+    ],
+    "GBPUSD=X": [
+        "sterling", "pound", "Bank of England", "UK inflation", "UK GDP", "UK employment",
+        "Federal Reserve", "US inflation", "US payrolls", "Treasury yields", "US dollar",
+        "UK politics", "trade tariffs",
+    ],
+}
 
 
 @dataclass(slots=True)
@@ -80,14 +101,24 @@ def canonicalize_url(url: str) -> str:
     return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"), "", ""))
 
 
+def _normalized_title(title: str) -> str:
+    text = re.sub(r"\b(update|breaking|live|analysis|opinion)\b", " ", title.lower())
+    return re.sub(r"\W+", " ", text).strip()
+
+
 def article_key(title: str, url: str) -> str:
-    normalized_title = re.sub(r"\W+", " ", title.lower()).strip()
-    canonical_url = canonicalize_url(url)
-    return hashlib.sha256(f"{canonical_url}|{normalized_title}".encode("utf-8")).hexdigest()
+    return hashlib.sha256(f"{canonicalize_url(url)}|{_normalized_title(title)}".encode("utf-8")).hexdigest()
+
+
+def event_key(title: str) -> str:
+    """A looser key used to cap repeated coverage of the same event."""
+    tokens = [token for token in _normalized_title(title).split() if len(token) > 3]
+    return " ".join(tokens[:10])
 
 
 def fetch_rss(max_per_feed: int = 40, timeout: int = 20) -> list[RawNewsArticle]:
     import feedparser
+
     articles: list[RawNewsArticle] = []
     headers = {"User-Agent": USER_AGENT}
     for feed_meta in RSS_FEEDS:
@@ -108,7 +139,7 @@ def fetch_rss(max_per_feed: int = 40, timeout: int = 20) -> list[RawNewsArticle]
                     published_at_utc=_parse_datetime(entry.get("published") or entry.get("updated")),
                     source=feed_meta["source"],
                     source_type=feed_meta["source_type"],
-                    summary=str(entry.get("summary", "")).strip(),
+                    summary=re.sub(r"<[^>]+>", " ", str(entry.get("summary", ""))).strip(),
                     reliability=float(feed_meta["reliability"]),
                     collected_at_utc=datetime.now(timezone.utc),
                 )
@@ -117,26 +148,16 @@ def fetch_rss(max_per_feed: int = 40, timeout: int = 20) -> list[RawNewsArticle]
 
 
 def _gdelt_query(symbols: list[str]) -> str:
-    terms = [
-        "gold", "Federal Reserve", "inflation", "interest rates", "US dollar", "bond yields",
-        "Treasury yields", "nonfarm payrolls", "unemployment", "GDP", "retail sales",
-        "PMI", "consumer confidence", "banking crisis", "credit downgrade", "debt ceiling",
-        "tariff", "sanctions", "war", "ceasefire", "oil prices", "OPEC", "natural gas",
-        "China economy", "Japan yen", "market volatility", "risk sentiment"
-    ]
-    if any(symbol.upper().startswith("EUR") for symbol in symbols):
-        terms.extend(["euro", "ECB", "Eurozone inflation"])
-    if any(symbol.upper().startswith("GBP") for symbol in symbols):
-        terms.extend(["sterling", "Bank of England", "UK inflation"])
-    return " OR ".join(f'"{term}"' if " " in term else term for term in terms)
+    terms: list[str] = []
+    for symbol in symbols:
+        terms.extend(INSTRUMENT_SEARCH_TERMS.get(symbol.upper(), []))
+    if not terms:
+        terms = ["central bank", "inflation", "interest rates", "US dollar", "bond yields", "geopolitical risk"]
+    unique = list(dict.fromkeys(terms))[:28]
+    return " OR ".join(f'"{term}"' if " " in term else term for term in unique)
 
 
-def fetch_gdelt(
-    symbols: list[str],
-    max_records: int = 75,
-    lookback_hours: int = 48,
-    timeout: int = 25,
-) -> list[RawNewsArticle]:
+def fetch_gdelt(symbols: list[str], max_records: int = 100, lookback_hours: int = 72, timeout: int = 25) -> list[RawNewsArticle]:
     query = _gdelt_query(symbols)
     start = datetime.now(timezone.utc) - timedelta(hours=max(1, lookback_hours))
     params = (
@@ -146,13 +167,12 @@ def fetch_gdelt(
     url = f"https://api.gdeltproject.org/api/v2/doc/doc?{params}"
     response = None
     last_error: Exception | None = None
-    # GDELT may temporarily return HTTP 429. Retry politely and honor Retry-After.
     for attempt in range(4):
         try:
             response = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout)
             if response.status_code == 429:
                 retry_after = response.headers.get("Retry-After")
-                delay = float(retry_after) if retry_after and retry_after.isdigit() else (2 ** attempt) * 3.0
+                delay = float(retry_after) if retry_after and retry_after.isdigit() else (2**attempt) * 3.0
                 if attempt == 3:
                     response.raise_for_status()
                 time.sleep(min(delay, 30.0))
@@ -163,12 +183,12 @@ def fetch_gdelt(
             last_error = exc
             if attempt == 3:
                 raise
-            time.sleep((2 ** attempt) * 2.0)
+            time.sleep((2**attempt) * 2.0)
     if response is None:
         raise RuntimeError(f"GDELT request failed: {last_error}")
-    data = response.json()
+
     articles: list[RawNewsArticle] = []
-    for item in data.get("articles", []):
+    for item in response.json().get("articles", []):
         title = str(item.get("title", "")).strip()
         if not title:
             continue
@@ -191,9 +211,9 @@ def fetch_gdelt(
 
 def collect_news(
     symbols: list[str],
-    max_per_feed: int = 30,
-    gdelt_max_records: int = 30,
-    lookback_hours: int = 48,
+    max_per_feed: int = 35,
+    gdelt_max_records: int = 100,
+    lookback_hours: int = 72,
     include_gdelt: bool = True,
 ) -> tuple[list[RawNewsArticle], list[str]]:
     errors: list[str] = []
@@ -209,12 +229,23 @@ def collect_news(
             errors.append(f"GDELT collection failed: {exc}")
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, lookback_hours))
-    deduped: dict[str, RawNewsArticle] = {}
+    exact: dict[str, RawNewsArticle] = {}
     for article in articles:
         if article.published_at_utc < cutoff:
             continue
         key = article_key(article.title, article.url)
-        current = deduped.get(key)
+        current = exact.get(key)
         if current is None or article.reliability > current.reliability:
-            deduped[key] = article
-    return sorted(deduped.values(), key=lambda item: item.published_at_utc, reverse=True), errors
+            exact[key] = article
+
+    # Limit repeated syndicated coverage so one story cannot dominate the engine.
+    event_counts: dict[str, int] = {}
+    deduped: list[RawNewsArticle] = []
+    for article in sorted(exact.values(), key=lambda item: (item.reliability, item.published_at_utc), reverse=True):
+        key = event_key(article.title)
+        if event_counts.get(key, 0) >= 3:
+            continue
+        event_counts[key] = event_counts.get(key, 0) + 1
+        deduped.append(article)
+
+    return sorted(deduped, key=lambda item: item.published_at_utc, reverse=True), errors
