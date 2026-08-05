@@ -1,299 +1,176 @@
 from __future__ import annotations
-
-import json
-import os
-import sqlite3
+import json, os, sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 DB = Path(os.getenv("MARKET_AI_DATABASE", "data/market_ai.db"))
+st.set_page_config(page_title="Learn & Trade | ZEMA Market AI", page_icon="🎓", layout="wide")
+st.title("🎓 Learn → Practice → Paper Trade")
+st.caption("Education-gated simulated trading with decision evidence and market-moving news. No live execution.")
 
-st.set_page_config(page_title="Paper Trading | ZEMA Market AI", page_icon="🧪", layout="wide")
-st.title("🧪 Paper Trading Lab")
-st.caption("Plan, size, record, and review simulated trades. No broker connection or real-money execution.")
+def now(): return datetime.now(timezone.utc).isoformat()
+def con():
+    c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; c.execute("PRAGMA foreign_keys=ON"); return c
 
-def now_utc() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def table(name):
+    with con() as c: return c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(name,)).fetchone() is not None
+if not all(table(x) for x in ("paper_accounts","paper_trades","education_progress")):
+    st.error("Run `python init_paper_trading.py` first."); st.stop()
 
-def connect():
-    con = sqlite3.connect(DB)
-    con.row_factory = sqlite3.Row
-    con.execute("PRAGMA foreign_keys = ON")
-    return con
+def q(sql, params=()):
+    with con() as c: return pd.read_sql_query(sql,c,params=params)
+def execute(sql, params=()):
+    with con() as c: c.execute(sql,params); c.commit()
 
-def ready() -> bool:
-    try:
-        with connect() as con:
-            names = {r[0] for r in con.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name IN ('paper_accounts','paper_trades')"
-            )}
-        return names == {"paper_accounts", "paper_trades"}
-    except sqlite3.Error:
-        return False
+def account_rows(): return q("SELECT * FROM paper_accounts ORDER BY id")
+def trade_rows(a):
+    d=q("SELECT * FROM paper_trades WHERE account_id=? ORDER BY planned_at_utc DESC,id DESC",(a,))
+    return d
 
-def accounts() -> pd.DataFrame:
-    with connect() as con:
-        return pd.read_sql_query("SELECT * FROM paper_accounts ORDER BY id", con)
+def latest_decision(symbol):
+    if not table("decision_analyses"): return None
+    with con() as c:
+        d=c.execute("SELECT * FROM decision_analyses WHERE symbol=? ORDER BY decided_at_utc DESC,id DESC LIMIT 1",(symbol,)).fetchone()
+        if not d: return None
+        r=c.execute("SELECT * FROM risk_evaluations WHERE decision_analysis_id=? ORDER BY evaluated_at_utc DESC,id DESC LIMIT 1",(d['id'],)).fetchone() if table('risk_evaluations') else None
+        return dict(d), (dict(r) if r else None)
 
-def trades(account_id: int) -> pd.DataFrame:
-    with connect() as con:
-        df = pd.read_sql_query(
-            "SELECT * FROM paper_trades WHERE account_id=? ORDER BY planned_at_utc DESC, id DESC",
-            con, params=(account_id,)
-        )
-    for col in ("planned_at_utc", "opened_at_utc", "closed_at_utc"):
-        if col in df:
-            df[col] = pd.to_datetime(df[col], utc=True, errors="coerce")
-    return df
+def news_category(text):
+    t=(text or '').lower()
+    groups={
+      'Central banks':['federal reserve','fomc','ecb','bank of england','interest rate','powell','lagarde'],
+      'Inflation & jobs':['inflation','cpi','pce','payroll','employment','unemployment','wage'],
+      'Growth & demand':['gdp','retail sales','pmi','consumer confidence','recession'],
+      'Rates & credit':['treasury','bond yield','debt ceiling','credit downgrade','banking crisis'],
+      'Geopolitics & trade':['war','sanction','tariff','ceasefire','election','trade conflict'],
+      'Energy & commodities':['oil','opec','natural gas','gold','commodity'],
+      'Global risk':['china','japan','yen','volatility','risk sentiment','equity selloff'],
+    }
+    for k,words in groups.items():
+        if any(w in t for w in words): return k
+    return 'Other market news'
 
-def create_account(name: str, balance: float):
-    now = now_utc()
-    with connect() as con:
-        con.execute(
-            "INSERT INTO paper_accounts(name,starting_balance,current_balance,created_at_utc,updated_at_utc) "
-            "VALUES(?,?,?,?,?)",
-            (name.strip(), balance, balance, now, now),
-        )
-        con.commit()
+LESSONS={
+ 'risk':('Risk before reward','Risk a fixed fraction of equity. Define invalidation first; position size comes from stop distance, not desired profit.',
+         [('What should determine position size?', ['Desired profit','Stop distance and account risk','Trade confidence only'],1),
+          ('A valid BUY structure is:', ['stop < entry < target','target < entry < stop','entry < stop < target'],0),
+          ('Minimum reward-to-risk used here?', ['0.5R','1.0R','1.5R'],2)]),
+ 'news':('Trading around news','High-impact data and central-bank communication can change volatility, spreads, and direction. A good setup can still be a bad trade near a major release.',
+         [('Which is usually high impact?', ['CPI or rate decision','A minor blog post','Old price data'],0),
+          ('Near major news you should:', ['Ignore timing','Reduce risk or wait','Increase leverage'],1),
+          ('News evidence should be:', ['Timestamped and sourced','Based on rumors','Used without context'],0)]),
+ 'regime':('Market regime and invalidation','Trending and ranging markets reward different entries. Invalidation is the price or condition proving the thesis wrong.',
+         [('In a range, chasing breakout candles is:', ['Always required','Often risky without confirmation','Risk-free'],1),
+          ('Invalidation should be:', ['Specific and testable','Changed after entry to avoid loss','Undefined'],0),
+          ('A regime label helps:', ['Choose tactics appropriate to conditions','Guarantee profit','Remove stop losses'],0)]),
+}
 
-def calc(direction: str, entry: float, stop: float, target: float, balance: float, risk_pct: float):
-    if direction == "BUY":
-        valid = stop < entry < target
-        stop_distance, reward_distance = entry - stop, target - entry
-        message = "BUY requires stop below entry and target above entry."
-    else:
-        valid = target < entry < stop
-        stop_distance, reward_distance = stop - entry, entry - target
-        message = "SELL requires target below entry and stop above entry."
-    if not valid or stop_distance <= 0:
-        return {"valid": False, "message": message, "risk": 0.0, "units": 0.0, "rr": 0.0}
-    risk = balance * risk_pct / 100
-    return {"valid": True, "message": "Valid structure", "risk": risk,
-            "units": risk / stop_distance, "rr": reward_distance / stop_distance}
-
-def save_plan(account_id: int, v: dict, c: dict):
-    now = now_utc()
-    with connect() as con:
-        con.execute(
-            """INSERT INTO paper_trades(
-                account_id,symbol,direction,status,timeframe,setup_name,market_regime,
-                entry_price,stop_price,target_price,risk_percent,risk_amount,units,
-                reward_risk_ratio,planned_at_utc,confidence,thesis,invalidation,
-                pre_trade_checklist,created_at_utc,updated_at_utc
-            ) VALUES(?,?,?,'PLANNED',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                account_id, v["symbol"], v["direction"], v["timeframe"], v["setup"],
-                v["regime"], v["entry"], v["stop"], v["target"], v["risk_pct"],
-                c["risk"], c["units"], c["rr"], now, v["confidence"], v["thesis"],
-                v["invalidation"], json.dumps(v["checklist"]), now, now,
-            ),
-        )
-        con.commit()
-
-def change_status(trade_id: int, account_id: int, status: str, exit_price=None, costs=0.0, lesson=""):
-    now = now_utc()
-    with connect() as con:
-        t = con.execute("SELECT * FROM paper_trades WHERE id=? AND account_id=?", (trade_id, account_id)).fetchone()
-        if not t:
-            raise ValueError("Trade not found")
-        if status == "OPEN":
-            con.execute("UPDATE paper_trades SET status='OPEN',opened_at_utc=?,updated_at_utc=? WHERE id=?",
-                        (now, now, trade_id))
-        elif status == "CANCELLED":
-            con.execute("UPDATE paper_trades SET status='CANCELLED',updated_at_utc=? WHERE id=?", (now, trade_id))
-        elif status == "CLOSED":
-            multiplier = 1 if t["direction"] == "BUY" else -1
-            gross = (float(exit_price) - t["entry_price"]) * t["units"] * multiplier
-            net = gross - costs
-            r_multiple = net / t["risk_amount"] if t["risk_amount"] else 0
-            bal = con.execute("SELECT current_balance FROM paper_accounts WHERE id=?", (account_id,)).fetchone()[0]
-            con.execute(
-                """UPDATE paper_trades SET status='CLOSED',closed_at_utc=?,exit_price=?,gross_pnl=?,
-                costs=?,net_pnl=?,r_multiple=?,lessons=?,updated_at_utc=? WHERE id=?""",
-                (now, exit_price, gross, costs, net, r_multiple, lesson.strip(), now, trade_id),
-            )
-            con.execute("UPDATE paper_accounts SET current_balance=?,updated_at_utc=? WHERE id=?",
-                        (max(0, bal + net), now, account_id))
-        con.commit()
-
-if not ready():
-    st.error("Run `python init_paper_trading.py` from the project root first.")
-    st.stop()
-
-acc = accounts()
+acc=account_rows()
 if acc.empty:
-    st.info("Create your first simulated account.")
-    with st.form("first_account"):
-        name = st.text_input("Account name", "Forex Practice")
-        starting = st.number_input("Starting balance", min_value=100.0, value=10000.0, step=500.0)
-        if st.form_submit_button("Create account"):
-            create_account(name, starting)
-            st.rerun()
+    with st.form('create'):
+        n=st.text_input('Account name','Forex Practice'); b=st.number_input('Starting balance',100.0,1000000.0,10000.0,500.0)
+        if st.form_submit_button('Create account'):
+            execute("INSERT INTO paper_accounts(name,starting_balance,current_balance,created_at_utc,updated_at_utc) VALUES(?,?,?,?,?)",(n.strip(),b,b,now(),now())); st.rerun()
     st.stop()
-
 with st.sidebar:
-    st.header("Paper account")
-    options = {int(r["id"]): f"{r['name']} · ${r['current_balance']:,.2f}" for _, r in acc.iterrows()}
-    account_id = st.selectbox("Active account", list(options), format_func=lambda x: options[x])
-    with st.expander("Create another account"):
-        with st.form("new_account"):
-            new_name = st.text_input("Name")
-            new_balance = st.number_input("Starting balance", min_value=100.0, value=10000.0)
-            if st.form_submit_button("Create"):
-                if new_name.strip():
-                    create_account(new_name, new_balance)
-                    st.rerun()
+    opts={int(r.id):f"{r['name']} · ${r['current_balance']:,.2f}" for _,r in acc.iterrows()}
+    aid=st.selectbox('Paper account',list(opts),format_func=lambda x:opts[x])
+    mode=st.radio('Mode',['Learning','Practice','Paper Trading'],index=2)
+account=acc[acc.id==aid].iloc[0]; balance=float(account.current_balance)
+progress=q("SELECT * FROM education_progress WHERE account_id=?",(aid,))
+passed=set(progress.loc[progress.passed==1,'lesson_key']) if not progress.empty else set()
+readiness=(len(passed)/len(LESSONS))*70
+trades=trade_rows(aid); closed=trades[trades.status=='CLOSED'] if not trades.empty else pd.DataFrame()
+if not closed.empty:
+    discipline=(pd.to_numeric(closed.quiz_score,errors='coerce').fillna(0)>=80).mean()*20
+    journal=(closed.lessons.fillna('').str.len()>10).mean()*10
+    readiness=min(100,readiness+discipline+journal)
+cols=st.columns(5); cols[0].metric('Balance',f"${balance:,.2f}"); cols[1].metric('Readiness',f"{readiness:.0f}%"); cols[2].metric('Lessons passed',f"{len(passed)}/{len(LESSONS)}"); cols[3].metric('Open',int((trades.status=='OPEN').sum()) if not trades.empty else 0); cols[4].metric('Closed',len(closed))
 
-account = acc[acc["id"] == account_id].iloc[0]
-balance = float(account["current_balance"])
-starting_balance = float(account["starting_balance"])
-df = trades(account_id)
-closed = df[df["status"] == "CLOSED"].copy() if not df.empty else pd.DataFrame()
-
-net_pnl = float(closed["net_pnl"].fillna(0).sum()) if not closed.empty else 0
-win_rate = float((closed["net_pnl"].fillna(0) > 0).mean()) if not closed.empty else 0
-metrics = st.columns(5)
-metrics[0].metric("Balance", f"${balance:,.2f}")
-metrics[1].metric("Net P&L", f"${net_pnl:,.2f}")
-metrics[2].metric("Closed trades", len(closed))
-metrics[3].metric("Win rate", f"{win_rate:.1%}")
-metrics[4].metric("Open", int((df["status"] == "OPEN").sum()) if not df.empty else 0)
-
-plan_tab, manage_tab, journal_tab, performance_tab, learn_tab = st.tabs(
-    ["Plan Trade", "Manage Trades", "Journal", "Performance", "Learn"]
-)
-
-with plan_tab:
-    st.subheader("Pre-trade plan and position sizing")
-    with st.form("plan"):
-        c1, c2, c3, c4 = st.columns(4)
-        symbol = c1.selectbox("Symbol", ["EURUSD=X", "GC=F"])
-        direction = c2.selectbox("Direction", ["BUY", "SELL"])
-        timeframe = c3.selectbox("Timeframe", ["15m", "1h", "4h", "1d"])
-        risk_pct = c4.number_input("Risk (%)", 0.1, 2.0, 0.5, 0.1)
-        base = 1.1 if symbol == "EURUSD=X" else 2400.0
-        p1, p2, p3 = st.columns(3)
-        entry = p1.number_input("Entry", min_value=0.00001, value=base, format="%.5f")
-        stop = p2.number_input("Stop", min_value=0.00001,
-                               value=base * (0.995 if direction == "BUY" else 1.005), format="%.5f")
-        target = p3.number_input("Target", min_value=0.00001,
-                                 value=base * (1.01 if direction == "BUY" else 0.99), format="%.5f")
-        q1, q2, q3 = st.columns(3)
-        setup = q1.text_input("Setup", placeholder="Trend pullback...")
-        regime = q2.selectbox("Regime", ["Trending", "Ranging", "High volatility", "Low volatility", "Unclear"])
-        confidence = q3.slider("Evidence strength", 0.0, 1.0, 0.5, 0.05)
-        thesis = st.text_area("Trade thesis")
-        invalidation = st.text_area("Invalidation condition")
-        a, b, c = st.columns(3)
-        checks = {
-            "trend_reviewed": a.checkbox("Trend/regime reviewed"),
-            "events_checked": a.checkbox("Economic events checked"),
-            "structure_checked": b.checkbox("Entry/stop/target logical"),
-            "reward_checked": b.checkbox("Reward-to-risk reviewed"),
-            "size_checked": c.checkbox("Position size reviewed"),
-            "emotion_checked": c.checkbox("No revenge/FOMO trading"),
-        }
-        submitted = st.form_submit_button("Calculate and save plan", use_container_width=True)
-
-    result = calc(direction, entry, stop, target, balance, risk_pct)
-    m = st.columns(4)
-    m[0].metric("Risk amount", f"${result['risk']:,.2f}")
-    m[1].metric("Units", f"{result['units']:,.2f}")
-    m[2].metric("Reward : risk", f"{result['rr']:.2f} R")
-    m[3].metric("Risk policy", "PASS" if risk_pct <= 0.5 else "CAUTION")
-
-    if submitted:
-        if not result["valid"]:
-            st.error(result["message"])
-        elif result["rr"] < 1.5:
-            st.error("Reward-to-risk must be at least 1.5 R.")
-        elif not all(checks.values()):
-            st.error("Complete every checklist item.")
-        elif not thesis.strip() or not invalidation.strip():
-            st.error("Add both thesis and invalidation.")
+learn, news, plan, manage, journal, performance = st.tabs(['Learn','Market-moving news','Plan Trade','Manage','Journal','Performance'])
+with learn:
+    st.subheader('Trading academy')
+    for key,(title,body,questions) in LESSONS.items():
+        with st.expander(('✅ ' if key in passed else '📘 ')+title, expanded=key not in passed):
+            st.write(body)
+            with st.form('quiz_'+key):
+                answers=[]
+                for i,(question,choices,correct) in enumerate(questions): answers.append(st.radio(question,choices,key=f'{key}_{i}'))
+                if st.form_submit_button('Submit lesson'):
+                    score=sum(answers[i]==questions[i][1][questions[i][2]] for i in range(len(questions)))/len(questions)*100
+                    execute("INSERT INTO education_progress(account_id,lesson_key,lesson_title,score,passed,answers_json,completed_at_utc) VALUES(?,?,?,?,?,?,?) ON CONFLICT(account_id,lesson_key) DO UPDATE SET score=excluded.score,passed=excluded.passed,answers_json=excluded.answers_json,completed_at_utc=excluded.completed_at_utc",(aid,key,title,score,int(score>=80),json.dumps(answers),now()))
+                    st.success(f'Score: {score:.0f}% — '+('passed' if score>=80 else 'review and retry')); st.rerun()
+with news:
+    st.subheader('News that can move FX, gold, rates, and risk sentiment')
+    st.caption('Coverage includes central banks, inflation/jobs, growth, rates/credit, geopolitics/trade, energy/commodities, and global risk.')
+    if not table('news_articles'): st.info('No news table found. Run the normal data collection workflow.')
+    else:
+        n=q("SELECT title,source,source_type,published_at_utc,reliability,url FROM news_articles ORDER BY published_at_utc DESC LIMIT 150")
+        if n.empty: st.info('No collected articles yet. Run `python collect_data.py` or the GitHub refresh workflow.')
         else:
-            save_plan(account_id, {
-                "symbol": symbol, "direction": direction, "timeframe": timeframe,
-                "setup": setup, "regime": regime, "entry": entry, "stop": stop,
-                "target": target, "risk_pct": risk_pct, "confidence": confidence,
-                "thesis": thesis, "invalidation": invalidation, "checklist": checks,
-            }, result)
-            st.success("Plan saved.")
-            st.rerun()
-
-with manage_tab:
-    st.subheader("Manage simulated trades")
-    actionable = df[df["status"].isin(["PLANNED", "OPEN"])] if not df.empty else pd.DataFrame()
-    if actionable.empty:
-        st.info("No planned or open trades.")
-    for _, trade in actionable.iterrows():
-        with st.expander(f"#{int(trade['id'])} · {trade['symbol']} · {trade['direction']} · {trade['status']}"):
-            st.write(trade["thesis"] or "No thesis")
-            st.caption(f"Entry {trade['entry_price']:.5f} | Stop {trade['stop_price']:.5f} | "
-                       f"Target {trade['target_price']:.5f} | Risk ${trade['risk_amount']:.2f}")
-            if trade["status"] == "PLANNED":
-                x, y = st.columns(2)
-                if x.button("Mark open", key=f"open{trade['id']}", use_container_width=True):
-                    change_status(int(trade["id"]), account_id, "OPEN")
-                    st.rerun()
-                if y.button("Cancel", key=f"cancel{trade['id']}", use_container_width=True):
-                    change_status(int(trade["id"]), account_id, "CANCELLED")
-                    st.rerun()
+            n['category']=n.title.map(news_category); cats=['All']+sorted(n.category.unique().tolist()); cat=st.selectbox('Category',cats)
+            view=n if cat=='All' else n[n.category==cat]
+            for _,r in view.head(50).iterrows():
+                impact='HIGH' if r.category in {'Central banks','Inflation & jobs','Geopolitics & trade','Rates & credit'} else 'MEDIUM'
+                st.markdown(f"**{impact} · {r['category']}** — {r['title']}")
+                st.caption(f"{r['source']} · {r['published_at_utc']} · reliability {float(r['reliability']):.0%}")
+with plan:
+    st.subheader('Evidence-linked trade plan')
+    symbol=st.selectbox('Symbol',['EURUSD=X','GC=F']); decision=latest_decision(symbol)
+    engine_action='WAIT'; engine_conf=0.0; decision_id=None; risk_id=None; evidence={}
+    if decision:
+        d,r=decision; engine_action=d.get('preferred_action','WAIT'); engine_conf=float(d.get('confidence') or 0); decision_id=d.get('id'); risk_id=r.get('id') if r else None
+        evidence={'decision':d,'risk':r}; st.info(f"Engine: {engine_action} · confidence {engine_conf:.1%} · alignment {d.get('alignment')} · risk {d.get('risk_level')}")
+    gated=not {'risk','news','regime'}.issubset(passed)
+    if gated: st.warning('Pass all three lessons before saving a paper trade. Planning remains available for practice.')
+    with st.form('plan'):
+        c1,c2,c3,c4=st.columns(4); direction=c1.selectbox('Direction',['BUY','SELL']); timeframe=c2.selectbox('Timeframe',['15m','1h','4h','1d']); risk_pct=c3.number_input('Risk %',0.1,2.0,0.5,0.1); regime=c4.selectbox('Regime',['Trending','Ranging','High volatility','Low volatility','Unclear'])
+        base=1.1 if symbol=='EURUSD=X' else 2400.0; a,b,c=st.columns(3); entry=a.number_input('Entry',0.00001,value=base,format='%.5f'); stop=b.number_input('Stop',0.00001,value=base*(.995 if direction=='BUY' else 1.005),format='%.5f'); target=c.number_input('Target',0.00001,value=base*(1.01 if direction=='BUY' else .99),format='%.5f')
+        thesis=st.text_area('Your market view and thesis'); invalid=st.text_area('Exact invalidation condition'); setup=st.text_input('Setup name','Evidence-linked setup')
+        checks=[st.checkbox('I reviewed trend/regime'),st.checkbox('I checked economic and geopolitical news'),st.checkbox('I accept the stop and position size'),st.checkbox('No revenge/FOMO trading')]
+        submit=st.form_submit_button('Save paper-trade plan',disabled=(mode!='Paper Trading'))
+    sd=(entry-stop if direction=='BUY' else stop-entry); rd=(target-entry if direction=='BUY' else entry-target); valid=sd>0 and rd>0; rr=rd/sd if valid else 0; risk=balance*risk_pct/100; units=risk/sd if valid else 0
+    st.write(f"Risk **${risk:,.2f}** · Units **{units:,.2f}** · Reward/risk **{rr:.2f}R**")
+    if submit:
+        errors=[]
+        if gated: errors.append('Complete all lessons')
+        if not valid: errors.append('Invalid entry/stop/target structure')
+        if rr<1.5: errors.append('Reward/risk must be at least 1.5R')
+        if not all(checks): errors.append('Complete the checklist')
+        if not thesis.strip() or not invalid.strip(): errors.append('Add thesis and invalidation')
+        if engine_action in {'WAIT','NO_TRADE'}: errors.append('Current engine decision is WAIT/NO TRADE')
+        if errors: st.error(' · '.join(errors))
+        else:
+            lesson='risk,news,regime'; quiz=float(progress.score.mean()) if not progress.empty else 0
+            execute("""INSERT INTO paper_trades(account_id,symbol,direction,status,timeframe,setup_name,market_regime,entry_price,stop_price,target_price,risk_percent,risk_amount,units,reward_risk_ratio,planned_at_utc,confidence,thesis,invalidation,pre_trade_checklist,decision_analysis_id,risk_evaluation_id,evidence_snapshot_json,education_lesson,quiz_score,readiness_score,user_market_view,engine_market_view,created_at_utc,updated_at_utc) VALUES(?,?,?,'PLANNED',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (aid,symbol,direction,timeframe,setup,regime,entry,stop,target,risk_pct,risk,units,rr,now(),engine_conf,thesis,invalid,json.dumps(checks),decision_id,risk_id,json.dumps(evidence,default=str),lesson,quiz,readiness,thesis,engine_action,now(),now()))
+            st.success('Evidence-linked paper trade saved.'); st.rerun()
+with manage:
+    active=trades[trades.status.isin(['PLANNED','OPEN'])] if not trades.empty else pd.DataFrame()
+    if active.empty: st.info('No planned or open trades.')
+    for _,t in active.iterrows():
+        with st.expander(f"#{int(t.id)} {t.symbol} {t.direction} · {t.status}"):
+            st.write(t.thesis)
+            if t.status=='PLANNED':
+                if st.button('Open simulated trade',key=f'o{t.id}'): execute("UPDATE paper_trades SET status='OPEN',opened_at_utc=?,updated_at_utc=? WHERE id=?",(now(),now(),int(t.id))); st.rerun()
             else:
-                with st.form(f"close{trade['id']}"):
-                    exit_price = st.number_input("Exit price", min_value=0.00001,
-                                                 value=float(trade["entry_price"]), format="%.5f")
-                    costs = st.number_input("Costs", min_value=0.0, value=0.0, step=0.25)
-                    lesson = st.text_area("Post-trade lesson")
-                    if st.form_submit_button("Close trade"):
-                        change_status(int(trade["id"]), account_id, "CLOSED", exit_price, costs, lesson)
-                        st.rerun()
-
-with journal_tab:
-    st.subheader("Trading journal")
-    if df.empty:
-        st.info("No entries yet.")
+                with st.form(f'c{t.id}'):
+                    ep=st.number_input('Exit price',0.00001,value=float(t.entry_price),format='%.5f'); costs=st.number_input('Costs',0.0,value=0.0); lesson=st.text_area('Post-trade lesson')
+                    if st.form_submit_button('Close trade'):
+                        mult=1 if t.direction=='BUY' else -1; gross=(ep-t.entry_price)*t.units*mult; net=gross-costs; rm=net/t.risk_amount if t.risk_amount else 0
+                        execute("UPDATE paper_trades SET status='CLOSED',closed_at_utc=?,exit_price=?,gross_pnl=?,costs=?,net_pnl=?,r_multiple=?,lessons=?,updated_at_utc=? WHERE id=?",(now(),ep,gross,costs,net,rm,lesson,now(),int(t.id)))
+                        execute("UPDATE paper_accounts SET current_balance=current_balance+?,updated_at_utc=? WHERE id=?",(net,now(),aid)); st.rerun()
+with journal:
+    if trades.empty: st.info('No trades yet.')
+    else: st.dataframe(trades,use_container_width=True,hide_index=True); st.download_button('Download journal CSV',trades.to_csv(index=False).encode(),f'zema_journal_{aid}.csv','text/csv')
+with performance:
+    if closed.empty: st.info('Close trades to see performance.')
     else:
-        st.dataframe(df, use_container_width=True, hide_index=True)
-        st.download_button("Download CSV", df.to_csv(index=False).encode(),
-                           f"paper_journal_{account_id}.csv", "text/csv")
-
-with performance_tab:
-    st.subheader("Paper-trading performance")
-    if closed.empty:
-        st.info("Close at least one trade to generate analytics.")
-    else:
-        ordered = closed.sort_values("closed_at_utc").copy()
-        ordered["net_pnl"] = pd.to_numeric(ordered["net_pnl"], errors="coerce").fillna(0)
-        ordered["equity"] = starting_balance + ordered["net_pnl"].cumsum()
-        ordered["peak"] = ordered["equity"].cummax()
-        ordered["drawdown"] = ordered["equity"] - ordered["peak"]
-        gp = ordered.loc[ordered["net_pnl"] > 0, "net_pnl"].sum()
-        gl = abs(ordered.loc[ordered["net_pnl"] < 0, "net_pnl"].sum())
-        pf = gp / gl if gl > 0 else float("inf")
-        z = st.columns(4)
-        z[0].metric("Profit factor", "∞" if pf == float("inf") else f"{pf:.2f}")
-        z[1].metric("Expectancy", f"${ordered['net_pnl'].mean():,.2f}")
-        z[2].metric("Max drawdown", f"${abs(ordered['drawdown'].min()):,.2f}")
-        z[3].metric("Average R", f"{ordered['r_multiple'].fillna(0).mean():.2f}")
-        fig = go.Figure(go.Scatter(x=ordered["closed_at_utc"], y=ordered["equity"],
-                                   mode="lines+markers", name="Equity"))
-        fig.update_layout(title="Simulated equity curve", height=380, yaxis_title="Balance")
-        st.plotly_chart(fig, use_container_width=True)
-
-with learn_tab:
-    st.subheader("Learning workflow")
-    st.markdown("""
-1. Identify the market regime.
-2. Check scheduled economic events.
-3. Define entry, stop, target, and invalidation.
-4. Size from account risk—not desired profit.
-5. Reject weak or poorly rewarded setups.
-6. Review the process after the outcome.
-""")
-    st.warning("Paper results do not guarantee live results. Live execution adds spreads, slippage, latency, financing, and emotional pressure.")
+        x=closed.copy(); x['net_pnl']=pd.to_numeric(x.net_pnl,errors='coerce').fillna(0); x=x.iloc[::-1]; x['equity']=float(account.starting_balance)+x.net_pnl.cumsum()
+        a,b,c,d=st.columns(4); a.metric('Net P&L',f"${x.net_pnl.sum():,.2f}"); b.metric('Win rate',f"{(x.net_pnl>0).mean():.1%}"); c.metric('Average R',f"{pd.to_numeric(x.r_multiple,errors='coerce').mean():.2f}"); d.metric('Avg readiness',f"{pd.to_numeric(x.readiness_score,errors='coerce').mean():.0f}%")
+        st.plotly_chart(go.Figure(go.Scatter(x=x.closed_at_utc,y=x.equity,mode='lines+markers')),use_container_width=True)
+        for group in ['symbol','market_regime','engine_market_view']:
+            if group in x: st.write(group.replace('_',' ').title()); st.dataframe(x.groupby(group).net_pnl.agg(['count','sum','mean']).reset_index(),hide_index=True,use_container_width=True)

@@ -13,37 +13,20 @@ import requests
 USER_AGENT = "MarketAI-Research/1.0 (+local decision-support project)"
 
 RSS_FEEDS = [
-    {
-        "source": "Federal Reserve",
-        "url": "https://www.federalreserve.gov/feeds/press_all.xml",
-        "source_type": "official_central_bank",
-        "reliability": 1.0,
-    },
-    {
-        "source": "Federal Reserve Speeches",
-        "url": "https://www.federalreserve.gov/feeds/speeches.xml",
-        "source_type": "official_central_bank",
-        "reliability": 1.0,
-    },
-    {
-        "source": "European Central Bank",
-        "url": "https://www.ecb.europa.eu/rss/press.html",
-        "source_type": "official_central_bank",
-        "reliability": 1.0,
-    },
-    {
-        "source": "ECB Speeches",
-        "url": "https://www.ecb.europa.eu/rss/speeches.html",
-        "source_type": "official_central_bank",
-        "reliability": 1.0,
-    },
-    {
-        "source": "Bank of England",
-        "url": "https://www.bankofengland.co.uk/rss/news",
-        "source_type": "official_central_bank",
-        "reliability": 1.0,
-    },
+    {"source":"Federal Reserve","url":"https://www.federalreserve.gov/feeds/press_all.xml","source_type":"official_central_bank","reliability":1.0},
+    {"source":"Federal Reserve Speeches","url":"https://www.federalreserve.gov/feeds/speeches.xml","source_type":"official_central_bank","reliability":1.0},
+    {"source":"European Central Bank","url":"https://www.ecb.europa.eu/rss/press.html","source_type":"official_central_bank","reliability":1.0},
+    {"source":"ECB Speeches","url":"https://www.ecb.europa.eu/rss/speeches.html","source_type":"official_central_bank","reliability":1.0},
+    {"source":"Bank of England","url":"https://www.bankofengland.co.uk/rss/news","source_type":"official_central_bank","reliability":1.0},
+    {"source":"Bank for International Settlements","url":"https://www.bis.org/doclist/all_pressrels.rss","source_type":"official_global_finance","reliability":0.95},
+    {"source":"BIS Statistics","url":"https://data.bis.org/feed.xml","source_type":"official_economic_data","reliability":0.95},
+    {"source":"U.S. Treasury Press","url":"https://home.treasury.gov/news/press-releases/feed","source_type":"official_government","reliability":0.95},
+    {"source":"BLS CPI","url":"https://www.bls.gov/feed/cpi.rss","source_type":"official_economic_data","reliability":1.0},
+    {"source":"BLS Employment Situation","url":"https://www.bls.gov/feed/empsit.rss","source_type":"official_economic_data","reliability":1.0},
+    {"source":"BLS Producer Prices","url":"https://www.bls.gov/feed/ppi.rss","source_type":"official_economic_data","reliability":1.0},
+    {"source":"Eurostat","url":"https://ec.europa.eu/eurostat/api/dissemination/rss/news-releases/en","source_type":"official_economic_data","reliability":0.95},
 ]
+
 
 
 @dataclass(slots=True)
@@ -134,7 +117,13 @@ def fetch_rss(max_per_feed: int = 40, timeout: int = 20) -> list[RawNewsArticle]
 
 
 def _gdelt_query(symbols: list[str]) -> str:
-    terms = ["gold", "Federal Reserve", "inflation", "interest rates", "US dollar", "bond yields"]
+    terms = [
+        "gold", "Federal Reserve", "inflation", "interest rates", "US dollar", "bond yields",
+        "Treasury yields", "nonfarm payrolls", "unemployment", "GDP", "retail sales",
+        "PMI", "consumer confidence", "banking crisis", "credit downgrade", "debt ceiling",
+        "tariff", "sanctions", "war", "ceasefire", "oil prices", "OPEC", "natural gas",
+        "China economy", "Japan yen", "market volatility", "risk sentiment"
+    ]
     if any(symbol.upper().startswith("EUR") for symbol in symbols):
         terms.extend(["euro", "ECB", "Eurozone inflation"])
     if any(symbol.upper().startswith("GBP") for symbol in symbols):
