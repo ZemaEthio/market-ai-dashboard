@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import sqlite3
@@ -76,6 +76,22 @@ CREATE INDEX IF NOT EXISTS idx_paper_trades_account_status ON paper_trades(accou
 CREATE INDEX IF NOT EXISTS idx_paper_trades_symbol ON paper_trades(symbol);
 
 CREATE INDEX IF NOT EXISTS idx_education_account ON education_progress(account_id,passed);
+
+CREATE TABLE IF NOT EXISTS academy_scenarios (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id INTEGER NOT NULL,
+    scenario_key TEXT NOT NULL,
+    selected_answer TEXT NOT NULL,
+    reasoning TEXT,
+    score REAL NOT NULL,
+    feedback TEXT NOT NULL,
+    attempted_at_utc TEXT NOT NULL,
+    FOREIGN KEY (account_id) REFERENCES paper_accounts(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_academy_scenarios_account
+    ON academy_scenarios(account_id, attempted_at_utc);
+
 """
 
 MIGRATION_COLUMNS = {
@@ -98,10 +114,6 @@ def initialize(database_path: Path) -> None:
         for name, sql_type in MIGRATION_COLUMNS.items():
             if name not in existing:
                 connection.execute(f"ALTER TABLE paper_trades ADD COLUMN {name} {sql_type}")
-        connection.execute(
-            "CREATE INDEX IF NOT EXISTS idx_paper_trades_decision "
-            "ON paper_trades(decision_analysis_id)"
-        )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_paper_trades_decision "
             "ON paper_trades(decision_analysis_id)"

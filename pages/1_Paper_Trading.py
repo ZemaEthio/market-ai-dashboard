@@ -124,8 +124,10 @@ with plan:
     if decision:
         d,r=decision; engine_action=d.get('preferred_action','WAIT'); engine_conf=float(d.get('confidence') or 0); decision_id=d.get('id'); risk_id=r.get('id') if r else None
         evidence={'decision':d,'risk':r}; st.info(f"Engine: {engine_action} · confidence {engine_conf:.1%} · alignment {d.get('alignment')} · risk {d.get('risk_level')}")
-    gated=not {'risk','news','regime'}.issubset(passed)
-    if gated: st.warning('Pass all three lessons before saving a paper trade. Planning remains available for practice.')
+    legacy_ready={'risk','news','regime'}.issubset(passed)
+    academy_ready={'fx_basics','risk_management','news_fundamentals'}.issubset(passed)
+    gated=not (legacy_ready or academy_ready)
+    if gated: st.warning('Complete the core Forex Academy lessons—Forex Foundations, Risk Management, and Fundamental & News Analysis—before saving a paper trade.')
     with st.form('plan'):
         c1,c2,c3,c4=st.columns(4); direction=c1.selectbox('Direction',['BUY','SELL']); timeframe=c2.selectbox('Timeframe',['15m','1h','4h','1d']); risk_pct=c3.number_input('Risk %',0.1,2.0,0.5,0.1); regime=c4.selectbox('Regime',['Trending','Ranging','High volatility','Low volatility','Unclear'])
         base=1.1 if symbol=='EURUSD=X' else 2400.0; a,b,c=st.columns(3); entry=a.number_input('Entry',0.00001,value=base,format='%.5f'); stop=b.number_input('Stop',0.00001,value=base*(.995 if direction=='BUY' else 1.005),format='%.5f'); target=c.number_input('Target',0.00001,value=base*(1.01 if direction=='BUY' else .99),format='%.5f')
