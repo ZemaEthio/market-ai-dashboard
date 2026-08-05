@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -496,6 +497,137 @@ def render_scenario_panel(
                     st.markdown(f"**{label}:** {value}")
 
 
+
+def table_exists(database_path: Path, table_name: str) -> bool:
+    try:
+        with sqlite3.connect(database_path) as connection:
+            row = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (table_name,),
+            ).fetchone()
+        return row is not None
+    except sqlite3.Error:
+        return False
+
+
+def load_backtest_frames(
+    database_path: Path,
+    selected_symbol: str,
+    selected_interval: str,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    required = ("backtest_runs", "backtest_trades", "backtest_metrics")
+    if not all(table_exists(database_path, table) for table in required):
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    with sqlite3.connect(database_path) as connection:
+        runs = pd.read_sql_query(
+            """
+            SELECT *
+            FROM backtest_runs
+            WHERE symbol = ? AND interval = ?
+            ORDER BY id DESC
+            """,
+            connection,
+            params=(selected_symbol, selected_interval),
+        )
+
+        if runs.empty:
+            return runs, pd.DataFrame(), pd.DataFrame()
+
+        run_ids = runs["id"].astype(int).tolist()
+        placeholders = ",".join("?" for _ in run_ids)
+
+        trades = pd.read_sql_query(
+            f"""
+            SELECT *
+            FROM backtest_trades
+            WHERE backtest_run_id IN ({placeholders})
+            ORDER BY decision_timestamp_utc
+            """,
+            connection,
+            params=run_ids,
+        )
+
+        metrics = pd.read_sql_query(
+            f"""
+            SELECT *
+            FROM backtest_metrics
+            WHERE backtest_run_id IN ({placeholders})
+            ORDER BY backtest_run_id DESC, metric_name
+            """,
+            connection,
+            params=run_ids,
+        )
+
+    for frame, columns in (
+        (
+            runs,
+            (
+                "start_timestamp_utc",
+                "end_timestamp_utc",
+                "started_at_utc",
+                "completed_at_utc",
+            ),
+        ),
+        (
+            trades,
+            (
+                "decision_timestamp_utc",
+                "exit_timestamp_utc",
+                "created_at_utc",
+            ),
+        ),
+        (metrics, ("created_at_utc",)),
+    ):
+        for column in columns:
+            if column in frame.columns:
+                frame[column] = pd.to_datetime(
+                    frame[column], utc=True, errors="coerce"
+                )
+
+    return runs, trades, metrics
+
+
+def calculate_performance_summary(
+    trades: pd.DataFrame,
+    initial_capital: float,
+) -> dict[str, float]:
+    if trades.empty:
+        return {
+            "total_trades": 0.0,
+            "win_rate": 0.0,
+            "net_pnl": 0.0,
+            "profit_factor": 0.0,
+            "expectancy": 0.0,
+            "max_drawdown": 0.0,
+        }
+
+    pnl = pd.to_numeric(trades.get("pnl_amount"), errors="coerce").fillna(0.0)
+    wins = pnl[pnl > 0]
+    losses = pnl[pnl < 0]
+
+    gross_profit = float(wins.sum())
+    gross_loss = abs(float(losses.sum()))
+    profit_factor = (
+        gross_profit / gross_loss
+        if gross_loss > 0
+        else (float("inf") if gross_profit > 0 else 0.0)
+    )
+
+    equity = float(initial_capital) + pnl.cumsum()
+    rolling_peak = equity.cummax()
+    drawdown = equity - rolling_peak
+
+    return {
+        "total_trades": float(len(trades)),
+        "win_rate": float((pnl > 0).mean()),
+        "net_pnl": float(pnl.sum()),
+        "profit_factor": float(profit_factor),
+        "expectancy": float(pnl.mean()),
+        "max_drawdown": abs(float(drawdown.min())) if not drawdown.empty else 0.0,
+    }
+
+
 def render_scenario(title: str, scenario: Any, icon: str) -> None:
     st.markdown(f"### {icon} {title}")
     if isinstance(scenario, dict):
@@ -871,8 +1003,16 @@ else:
     chart_help[2].caption("Dotted lines: support and resistance")
     chart_help[3].caption("Solid/dashed trade lines: entry, stop, and target")
 
-summary_tab, risk_tab, technical_tab, news_tab, scenarios_tab, audit_tab = st.tabs(
-    ["Decision", "Risk", "Technicals", "News & Macro", "Scenarios", "Audit"]
+summary_tab, risk_tab, technical_tab, news_tab, scenarios_tab, performance_tab, audit_tab = st.tabs(
+    [
+        "Decision",
+        "Risk",
+        "Technicals",
+        "News & Macro",
+        "Scenarios",
+        "Performance",
+        "Audit",
+    ]
 )
 
 with summary_tab:
@@ -1559,6 +1699,328 @@ with risk_tab:
             "Approval means the setup passed sizing, staleness, confidence, reward-to-risk, "
             "event-risk, and data-quality rules. It does not guarantee profit."
         )
+
+
+with performance_tab:
+    st.markdown("### Backtesting & Performance Validation")
+    st.caption(
+        "Historical validation for the selected instrument and interval. "
+        "Results will appear here as the replay and trade-simulation engines populate the backtest tables."
+    )
+
+    schema_tables = ("backtest_runs", "backtest_trades", "backtest_metrics")
+    schema_ready = all(table_exists(DATABASE_PATH, table) for table in schema_tables)
+
+    if not schema_ready:
+        st.error(
+            "The backtesting schema is not available in this database. "
+            "Run `python init_backtesting.py` against the deployed database."
+        )
+    else:
+        runs_df, trades_df, metrics_df = load_backtest_frames(
+            DATABASE_PATH,
+            symbol,
+            interval,
+        )
+
+        if runs_df.empty:
+            readiness = st.columns(3)
+            readiness[0].markdown(
+                card(
+                    "Schema status",
+                    "READY",
+                    "Runs, trades, and metrics tables detected",
+                    "positive",
+                ),
+                unsafe_allow_html=True,
+            )
+            readiness[1].markdown(
+                card(
+                    "Backtest runs",
+                    "0",
+                    f"No runs yet for {symbol} · {interval}",
+                    "neutral",
+                ),
+                unsafe_allow_html=True,
+            )
+            readiness[2].markdown(
+                card(
+                    "Next component",
+                    "SIMULATOR",
+                    "Historical trade replay will populate this tab",
+                    "info-card",
+                ),
+                unsafe_allow_html=True,
+            )
+
+            st.info(
+                "The dashboard side is ready. There are no simulated trades yet, "
+                "so performance statistics cannot be calculated honestly."
+            )
+
+            st.markdown("#### What will appear here")
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "section": "Core metrics",
+                            "outputs": "Trades, win rate, net P&L, profit factor, expectancy, drawdown",
+                        },
+                        {
+                            "section": "Equity analysis",
+                            "outputs": "Equity curve and drawdown curve",
+                        },
+                        {
+                            "section": "Calibration",
+                            "outputs": "Win rate and average result by confidence band",
+                        },
+                        {
+                            "section": "Segmentation",
+                            "outputs": "Performance by direction, regime, and model version",
+                        },
+                        {
+                            "section": "Auditability",
+                            "outputs": "Run assumptions, costs, dates, and recent simulated trades",
+                        },
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            run_options = {
+                int(row["id"]): (
+                    f"Run {int(row['id'])} · {row.get('model_version', 'unknown')} · "
+                    f"{row.get('start_timestamp_utc', '—')} → {row.get('end_timestamp_utc', '—')}"
+                )
+                for _, row in runs_df.iterrows()
+            }
+            selected_run_id = st.selectbox(
+                "Backtest run",
+                options=list(run_options.keys()),
+                format_func=lambda run_id: run_options[run_id],
+            )
+
+            selected_run = runs_df[runs_df["id"] == selected_run_id].iloc[0]
+            selected_trades = trades_df[
+                trades_df["backtest_run_id"] == selected_run_id
+            ].copy()
+            selected_metrics = metrics_df[
+                metrics_df["backtest_run_id"] == selected_run_id
+            ].copy()
+
+            initial_capital = float(selected_run.get("initial_capital", 0.0) or 0.0)
+            summary = calculate_performance_summary(
+                selected_trades,
+                initial_capital,
+            )
+
+            top = st.columns(6)
+            top[0].metric("Trades", int(summary["total_trades"]))
+            top[1].metric("Win rate", f"{summary['win_rate']:.1%}")
+            top[2].metric("Net P&L", f"${summary['net_pnl']:,.2f}")
+            top[3].metric(
+                "Profit factor",
+                "∞"
+                if summary["profit_factor"] == float("inf")
+                else f"{summary['profit_factor']:.2f}",
+            )
+            top[4].metric("Expectancy", f"${summary['expectancy']:,.2f}")
+            top[5].metric("Max drawdown", f"${summary['max_drawdown']:,.2f}")
+
+            st.markdown("#### Run assumptions")
+            assumptions = pd.DataFrame(
+                [
+                    {
+                        "symbol": selected_run.get("symbol"),
+                        "interval": selected_run.get("interval"),
+                        "model version": selected_run.get("model_version"),
+                        "status": selected_run.get("status"),
+                        "initial capital": selected_run.get("initial_capital"),
+                        "spread bps": selected_run.get("spread_bps"),
+                        "slippage bps": selected_run.get("slippage_bps"),
+                        "start": selected_run.get("start_timestamp_utc"),
+                        "end": selected_run.get("end_timestamp_utc"),
+                    }
+                ]
+            )
+            st.dataframe(assumptions, use_container_width=True, hide_index=True)
+
+            if selected_trades.empty:
+                st.warning(
+                    "This run exists but contains no simulated trades yet. "
+                    "The historical replay may still be incomplete."
+                )
+            else:
+                selected_trades["pnl_amount"] = pd.to_numeric(
+                    selected_trades["pnl_amount"],
+                    errors="coerce",
+                ).fillna(0.0)
+                selected_trades = selected_trades.sort_values(
+                    "decision_timestamp_utc"
+                )
+                selected_trades["equity"] = (
+                    initial_capital + selected_trades["pnl_amount"].cumsum()
+                )
+                selected_trades["equity_peak"] = selected_trades["equity"].cummax()
+                selected_trades["drawdown"] = (
+                    selected_trades["equity"] - selected_trades["equity_peak"]
+                )
+
+                chart_left, chart_right = st.columns(2)
+                with chart_left:
+                    equity_fig = go.Figure()
+                    equity_fig.add_trace(
+                        go.Scatter(
+                            x=selected_trades["exit_timestamp_utc"].fillna(
+                                selected_trades["decision_timestamp_utc"]
+                            ),
+                            y=selected_trades["equity"],
+                            mode="lines",
+                            name="Equity",
+                        )
+                    )
+                    equity_fig.update_layout(
+                        title="Equity curve",
+                        height=360,
+                        margin={"l": 10, "r": 10, "t": 48, "b": 10},
+                        xaxis_title=None,
+                        yaxis_title="Account value",
+                        template="plotly_dark",
+                    )
+                    st.plotly_chart(
+                        equity_fig,
+                        use_container_width=True,
+                        config={"displaylogo": False},
+                    )
+
+                with chart_right:
+                    drawdown_fig = go.Figure()
+                    drawdown_fig.add_trace(
+                        go.Scatter(
+                            x=selected_trades["exit_timestamp_utc"].fillna(
+                                selected_trades["decision_timestamp_utc"]
+                            ),
+                            y=selected_trades["drawdown"],
+                            mode="lines",
+                            fill="tozeroy",
+                            name="Drawdown",
+                        )
+                    )
+                    drawdown_fig.update_layout(
+                        title="Drawdown curve",
+                        height=360,
+                        margin={"l": 10, "r": 10, "t": 48, "b": 10},
+                        xaxis_title=None,
+                        yaxis_title="Drawdown",
+                        template="plotly_dark",
+                    )
+                    st.plotly_chart(
+                        drawdown_fig,
+                        use_container_width=True,
+                        config={"displaylogo": False},
+                    )
+
+                st.markdown("#### Confidence calibration")
+                confidence_values = pd.to_numeric(
+                    selected_trades.get("confidence"),
+                    errors="coerce",
+                )
+                calibration_df = selected_trades.assign(
+                    confidence_numeric=confidence_values
+                ).dropna(subset=["confidence_numeric"])
+
+                if calibration_df.empty:
+                    st.caption("No confidence values are available for calibration.")
+                else:
+                    calibration_df["confidence_band"] = pd.cut(
+                        calibration_df["confidence_numeric"],
+                        bins=[0.0, 0.55, 0.65, 0.75, 0.85, 1.0],
+                        labels=[
+                            "≤55%",
+                            "55–65%",
+                            "65–75%",
+                            "75–85%",
+                            "85–100%",
+                        ],
+                        include_lowest=True,
+                    )
+                    calibration = (
+                        calibration_df.groupby(
+                            "confidence_band",
+                            observed=False,
+                        )
+                        .agg(
+                            trades=("id", "count"),
+                            win_rate=("pnl_amount", lambda values: (values > 0).mean()),
+                            average_pnl=("pnl_amount", "mean"),
+                        )
+                        .reset_index()
+                    )
+                    st.dataframe(
+                        calibration,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                st.markdown("#### Performance by direction")
+                if "direction" in selected_trades.columns:
+                    direction_summary = (
+                        selected_trades.groupby("direction", dropna=False)
+                        .agg(
+                            trades=("id", "count"),
+                            win_rate=("pnl_amount", lambda values: (values > 0).mean()),
+                            net_pnl=("pnl_amount", "sum"),
+                            average_pnl=("pnl_amount", "mean"),
+                        )
+                        .reset_index()
+                    )
+                    st.dataframe(
+                        direction_summary,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                st.markdown("#### Recent simulated trades")
+                trade_columns = [
+                    column
+                    for column in (
+                        "decision_timestamp_utc",
+                        "direction",
+                        "confidence",
+                        "market_regime",
+                        "entry_price",
+                        "stop_price",
+                        "target_price",
+                        "exit_price",
+                        "exit_reason",
+                        "pnl_amount",
+                        "r_multiple",
+                        "holding_hours",
+                    )
+                    if column in selected_trades.columns
+                ]
+                st.dataframe(
+                    selected_trades[trade_columns]
+                    .sort_values("decision_timestamp_utc", ascending=False)
+                    .head(50),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            if not selected_metrics.empty:
+                with st.expander("Persisted backtest metrics"):
+                    st.dataframe(
+                        selected_metrics,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+        st.caption(
+            "Backtest results are research outputs. Accuracy depends on point-in-time data, "
+            "realistic costs, conservative stop/target handling, and out-of-sample validation."
+        )
+
 
 with audit_tab:
     st.markdown("### System Audit & Freshness")

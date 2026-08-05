@@ -1,0 +1,104 @@
+name: Run Historical Backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: "Symbol to backtest"
+        required: true
+        default: "EURUSD=X"
+        type: choice
+        options:
+          - "EURUSD=X"
+          - "GC=F"
+      interval:
+        description: "Candle interval"
+        required: true
+        default: "1h"
+        type: choice
+        options:
+          - "1h"
+      initial_capital:
+        description: "Initial simulated capital"
+        required: true
+        default: "10000"
+      risk_percent:
+        description: "Risk per trade (%)"
+        required: true
+        default: "0.5"
+      minimum_confidence:
+        description: "Minimum decision confidence"
+        required: true
+        default: "0.0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: historical-backtest-main
+  cancel-in-progress: false
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify required files
+        shell: bash
+        run: |
+          test -f run_historical_backtest.py
+          test -f data/market_ai.db
+
+      - name: Apply schema compatibility fix
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("run_historical_backtest.py")
+          text = path.read_text(encoding="utf-8")
+
+          old = '("action", "recommended_action", "decision", "signal"),'
+          new = '("preferred_action", "action", "recommended_action", "decision", "signal"),'
+
+          if old in text and "preferred_action" not in text:
+              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+              print("Applied preferred_action compatibility fix.")
+          else:
+              print("Compatibility fix already present or pattern not found.")
+
+      - name: Initialize backtesting schema
+        run: python init_backtesting.py
+
+      - name: Run historical backtest
+        run: |
+          python run_historical_backtest.py             --symbol "${{ inputs.symbol }}"             --interval "${{ inputs.interval }}"             --initial-capital "${{ inputs.initial_capital }}"             --risk-percent "${{ inputs.risk_percent }}"             --minimum-confidence "${{ inputs.minimum_confidence }}"             --model-version "github-actions-decision-replay-v1"
+
+      - name: Show database changes
+        run: git status --short
+
+      - name: Commit backtest results
+        shell: bash
+        run: |
+          if git diff --quiet -- data/market_ai.db; then
+            echo "No database changes to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add data/market_ai.db
+          git commit -m "chore(backtest): run ${{ inputs.symbol }} historical backtest"
+
+          git pull --rebase origin main
+          git push origin HEAD:main
