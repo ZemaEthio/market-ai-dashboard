@@ -9,6 +9,7 @@ from typing import Any
 
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 
 from app.services.read_model import (
@@ -856,84 +857,174 @@ st.caption(
 if candles_df.empty:
     st.warning("No candles found for the selected instrument and interval.")
 else:
-    chart_data = candles_df.copy()
+    chart_data = candles_df.copy().sort_index()
     chart_data["EMA 20"] = chart_data["close"].ewm(span=20, adjust=False).mean()
     chart_data["EMA 50"] = chart_data["close"].ewm(span=50, adjust=False).mean()
     chart_data["EMA 200"] = chart_data["close"].ewm(span=200, adjust=False).mean()
 
-    fig = go.Figure()
+    # Volatility envelope and momentum indicator.
+    rolling_mean = chart_data["close"].rolling(20).mean()
+    rolling_std = chart_data["close"].rolling(20).std()
+    chart_data["BB Upper"] = rolling_mean + (2 * rolling_std)
+    chart_data["BB Lower"] = rolling_mean - (2 * rolling_std)
 
-    fig.add_trace(
-        go.Candlestick(
-            x=chart_data.index,
-            open=chart_data["open"],
-            high=chart_data["high"],
-            low=chart_data["low"],
-            close=chart_data["close"],
-            name="Price",
-            increasing_line_color="#16a34a",
-            decreasing_line_color="#dc2626",
-            increasing_fillcolor="#16a34a",
-            decreasing_fillcolor="#dc2626",
-        )
+    price_delta = chart_data["close"].diff()
+    average_gain = price_delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+    average_loss = (-price_delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+    relative_strength = average_gain / average_loss.replace(0, pd.NA)
+    chart_data["RSI 14"] = (100 - (100 / (1 + relative_strength))).fillna(50)
+    chart_data["Return %"] = chart_data["close"].pct_change().mul(100)
+
+    controls = st.columns([1.2, 1, 1, 1, 1.25])
+    chart_style = controls[0].selectbox(
+        "Chart style",
+        ["Candles", "Line"],
+        index=0,
+        key="market_overview_chart_style",
+    )
+    show_emas = controls[1].toggle("EMA trend", value=True, key="market_show_emas")
+    show_bands = controls[2].toggle("Bollinger", value=False, key="market_show_bands")
+    show_levels = controls[3].toggle("S/R levels", value=True, key="market_show_levels")
+    lower_panel = controls[4].selectbox(
+        "Lower panel",
+        ["RSI", "Volume", "Returns"],
+        index=0,
+        key="market_lower_panel",
     )
 
-    fig.add_trace(
-        go.Scatter(
-            x=chart_data.index,
-            y=chart_data["EMA 20"],
-            mode="lines",
-            name="EMA 20",
-            line={"color": "#06b6d4", "width": 1.8},
-        )
+    volume_available = "volume" in chart_data.columns and chart_data["volume"].notna().any()
+    if lower_panel == "Volume" and not volume_available:
+        st.caption("Volume is unavailable for this feed, so the lower panel is showing RSI instead.")
+        lower_panel = "RSI"
+
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.045,
+        row_heights=[0.72, 0.28],
     )
-    fig.add_trace(
-        go.Scatter(
-            x=chart_data.index,
-            y=chart_data["EMA 50"],
-            mode="lines",
-            name="EMA 50",
-            line={"color": "#7c3aed", "width": 1.8},
+
+    if chart_style == "Candles":
+        fig.add_trace(
+            go.Candlestick(
+                x=chart_data.index,
+                open=chart_data["open"],
+                high=chart_data["high"],
+                low=chart_data["low"],
+                close=chart_data["close"],
+                name="Price",
+                increasing_line_color="#16a34a",
+                decreasing_line_color="#dc2626",
+                increasing_fillcolor="#16a34a",
+                decreasing_fillcolor="#dc2626",
+                hovertext=[
+                    f"O {o:.5f}<br>H {h:.5f}<br>L {l:.5f}<br>C {c:.5f}"
+                    for o, h, l, c in zip(
+                        chart_data["open"], chart_data["high"], chart_data["low"], chart_data["close"]
+                    )
+                ],
+                hoverinfo="text+x",
+            ),
+            row=1,
+            col=1,
         )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=chart_data.index,
-            y=chart_data["EMA 200"],
-            mode="lines",
-            name="EMA 200",
-            line={"color": "#f59e0b", "width": 2.0},
+    else:
+        fig.add_trace(
+            go.Scatter(
+                x=chart_data.index,
+                y=chart_data["close"],
+                mode="lines",
+                name="Close",
+                line={"color": "#38bdf8", "width": 2.2},
+                fill="tozeroy",
+                fillcolor="rgba(56,189,248,.08)",
+            ),
+            row=1,
+            col=1,
         )
-    )
+
+    if show_emas:
+        for label, color, width in (
+            ("EMA 20", "#06b6d4", 1.7),
+            ("EMA 50", "#8b5cf6", 1.8),
+            ("EMA 200", "#f59e0b", 2.1),
+        ):
+            fig.add_trace(
+                go.Scatter(
+                    x=chart_data.index,
+                    y=chart_data[label],
+                    mode="lines",
+                    name=label,
+                    line={"color": color, "width": width},
+                    hovertemplate=f"{label}: %{{y:.5f}}<extra></extra>",
+                ),
+                row=1,
+                col=1,
+            )
+
+    if show_bands:
+        fig.add_trace(
+            go.Scatter(
+                x=chart_data.index,
+                y=chart_data["BB Upper"],
+                mode="lines",
+                name="BB upper",
+                line={"color": "rgba(148,163,184,.75)", "width": 1, "dash": "dot"},
+                hoverinfo="skip",
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=chart_data.index,
+                y=chart_data["BB Lower"],
+                mode="lines",
+                name="BB lower",
+                line={"color": "rgba(148,163,184,.75)", "width": 1, "dash": "dot"},
+                fill="tonexty",
+                fillcolor="rgba(148,163,184,.08)",
+                hoverinfo="skip",
+            ),
+            row=1,
+            col=1,
+        )
 
     support_levels = (market or {}).get("support_levels") or []
     resistance_levels = (market or {}).get("resistance_levels") or []
+    if show_levels:
+        for index, level in enumerate(support_levels[:4], start=1):
+            try:
+                numeric_level = float(level)
+                fig.add_hline(
+                    y=numeric_level,
+                    row=1,
+                    col=1,
+                    line_dash="dot",
+                    line_color="#22c55e",
+                    opacity=0.62,
+                    annotation_text=f"S{index} {numeric_level:.5f}",
+                    annotation_position="bottom left",
+                )
+            except (TypeError, ValueError):
+                pass
 
-    for index, level in enumerate(support_levels[:4], start=1):
-        try:
-            fig.add_hline(
-                y=float(level),
-                line_dash="dot",
-                line_color="#22c55e",
-                opacity=0.62,
-                annotation_text=f"S{index} {float(level):.5f}",
-                annotation_position="bottom left",
-            )
-        except (TypeError, ValueError):
-            pass
-
-    for index, level in enumerate(resistance_levels[:4], start=1):
-        try:
-            fig.add_hline(
-                y=float(level),
-                line_dash="dot",
-                line_color="#ef4444",
-                opacity=0.62,
-                annotation_text=f"R{index} {float(level):.5f}",
-                annotation_position="top left",
-            )
-        except (TypeError, ValueError):
-            pass
+        for index, level in enumerate(resistance_levels[:4], start=1):
+            try:
+                numeric_level = float(level)
+                fig.add_hline(
+                    y=numeric_level,
+                    row=1,
+                    col=1,
+                    line_dash="dot",
+                    line_color="#ef4444",
+                    opacity=0.62,
+                    annotation_text=f"R{index} {numeric_level:.5f}",
+                    annotation_position="top left",
+                )
+            except (TypeError, ValueError):
+                pass
 
     trade_levels = (
         ("Entry", (risk or {}).get("entry_price"), "#2563eb", "solid"),
@@ -946,6 +1037,8 @@ else:
                 numeric_value = float(value)
                 fig.add_hline(
                     y=numeric_value,
+                    row=1,
+                    col=1,
                     line_dash=dash,
                     line_color=color,
                     line_width=2,
@@ -955,17 +1048,78 @@ else:
         except (TypeError, ValueError):
             pass
 
+    latest_price = float(chart_data["close"].iloc[-1])
+    fig.add_hline(
+        y=latest_price,
+        row=1,
+        col=1,
+        line_color="rgba(226,232,240,.55)",
+        line_width=1,
+        annotation_text=f"Last {latest_price:.5f}",
+        annotation_position="bottom right",
+    )
+
+    if lower_panel == "RSI":
+        fig.add_trace(
+            go.Scatter(
+                x=chart_data.index,
+                y=chart_data["RSI 14"],
+                mode="lines",
+                name="RSI 14",
+                line={"color": "#a78bfa", "width": 2},
+                hovertemplate="RSI: %{y:.1f}<extra></extra>",
+            ),
+            row=2,
+            col=1,
+        )
+        fig.add_hrect(y0=70, y1=100, row=2, col=1, fillcolor="rgba(239,68,68,.08)", line_width=0)
+        fig.add_hrect(y0=0, y1=30, row=2, col=1, fillcolor="rgba(34,197,94,.08)", line_width=0)
+        fig.add_hline(y=70, row=2, col=1, line_dash="dot", line_color="#ef4444", opacity=.65)
+        fig.add_hline(y=30, row=2, col=1, line_dash="dot", line_color="#22c55e", opacity=.65)
+        fig.update_yaxes(title_text="RSI", range=[0, 100], row=2, col=1)
+    elif lower_panel == "Volume":
+        up_volume = chart_data["close"] >= chart_data["open"]
+        volume_colors = ["#16a34a" if value else "#dc2626" for value in up_volume]
+        fig.add_trace(
+            go.Bar(
+                x=chart_data.index,
+                y=chart_data["volume"],
+                name="Volume",
+                marker_color=volume_colors,
+                opacity=.65,
+                hovertemplate="Volume: %{y:,.0f}<extra></extra>",
+            ),
+            row=2,
+            col=1,
+        )
+        fig.update_yaxes(title_text="Volume", row=2, col=1)
+    else:
+        return_colors = ["#16a34a" if value >= 0 else "#dc2626" for value in chart_data["Return %"].fillna(0)]
+        fig.add_trace(
+            go.Bar(
+                x=chart_data.index,
+                y=chart_data["Return %"],
+                name="Return %",
+                marker_color=return_colors,
+                opacity=.72,
+                hovertemplate="Return: %{y:.3f}%<extra></extra>",
+            ),
+            row=2,
+            col=1,
+        )
+        fig.add_hline(y=0, row=2, col=1, line_color="rgba(226,232,240,.45)")
+        fig.update_yaxes(title_text="Return %", row=2, col=1)
+
     fig.update_layout(
         title={
             "text": f"{symbol} · {interval} market structure",
             "x": 0.01,
             "xanchor": "left",
         },
-        height=575,
-        margin={"l": 10, "r": 10, "t": 58, "b": 10},
-        xaxis_title=None,
-        yaxis_title="Price",
+        height=720,
+        margin={"l": 10, "r": 10, "t": 72, "b": 10},
         hovermode="x unified",
+        template="plotly_dark",
         legend={
             "orientation": "h",
             "yanchor": "bottom",
@@ -973,8 +1127,8 @@ else:
             "xanchor": "right",
             "x": 1,
         },
-        xaxis={
-            "rangeslider": {"visible": False},
+        xaxis_rangeslider_visible=False,
+        xaxis2={
             "rangeselector": {
                 "buttons": [
                     {"count": 24, "label": "1D", "step": "hour", "stepmode": "backward"},
@@ -982,10 +1136,11 @@ else:
                     {"count": 1, "label": "1M", "step": "month", "stepmode": "backward"},
                     {"step": "all", "label": "All"},
                 ]
-            },
+            }
         },
-        template="plotly_dark",
     )
+    fig.update_yaxes(title_text="Price", row=1, col=1, showgrid=True, gridcolor="rgba(148,163,184,.12)")
+    fig.update_xaxes(showgrid=False)
 
     st.plotly_chart(
         fig,
@@ -993,15 +1148,38 @@ else:
         config={
             "displaylogo": False,
             "scrollZoom": True,
+            "responsive": True,
             "modeBarButtonsToRemove": ["lasso2d", "select2d"],
         },
     )
 
-    chart_help = st.columns(4)
-    chart_help[0].caption("🟢 Green candles: price closed above its open")
-    chart_help[1].caption("🔴 Red candles: price closed below its open")
-    chart_help[2].caption("Dotted lines: support and resistance")
-    chart_help[3].caption("Solid/dashed trade lines: entry, stop, and target")
+    recent_window = chart_data.tail(min(24, len(chart_data)))
+    recent_change = (
+        (recent_window["close"].iloc[-1] / recent_window["close"].iloc[0] - 1) * 100
+        if len(recent_window) > 1
+        else 0.0
+    )
+    recent_range = ((recent_window["high"].max() - recent_window["low"].min()) / latest_price) * 100
+    chart_stats = st.columns(4)
+    chart_stats[0].metric("Visible change", f"{recent_change:+.2f}%")
+    chart_stats[1].metric("Visible range", f"{recent_range:.2f}%")
+    chart_stats[2].metric("RSI now", f"{chart_data['RSI 14'].iloc[-1]:.1f}")
+    chart_stats[3].metric(
+        "EMA structure",
+        "Bullish" if chart_data["EMA 20"].iloc[-1] > chart_data["EMA 50"].iloc[-1] else "Bearish",
+    )
+
+    with st.expander("How to read this chart", expanded=False):
+        st.markdown(
+            """
+            - **Candles/line:** switch between detailed price action and a cleaner trend view.
+            - **EMA 20/50/200:** short-, medium-, and long-term trend structure.
+            - **Bollinger Bands:** a volatility envelope; widening bands indicate expanding volatility.
+            - **RSI:** momentum above 70 can be stretched; below 30 can be deeply sold.
+            - **Support/resistance:** dotted levels calculated by the market engine.
+            - **Entry/stop/target:** the current risk plan, when one is available.
+            """
+        )
 
 summary_tab, risk_tab, technical_tab, news_tab, scenarios_tab, performance_tab, audit_tab = st.tabs(
     [
